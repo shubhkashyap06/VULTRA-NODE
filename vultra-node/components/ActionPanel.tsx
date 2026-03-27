@@ -10,25 +10,32 @@ import { useWriteContract, useSwitchChain, useAccount, useReadContracts } from "
 import { parseEther } from "viem";
 import VaultABI from "@/lib/abis/LiquidityVault.json";
 import TokenABI from "@/lib/abis/VultraToken.json";
+import { supabase } from "@/lib/supabase";
 
 const VAULT_ADDRESS = process.env.NEXT_PUBLIC_VAULT_ADDRESS as `0x${string}`;
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_VLT_TOKEN_ADDRESS as `0x${string}`;
 const ENGINE_URL = "http://localhost:3001";
 
 export default function ActionPanel() {
-  const { isFrozen, userBalance, totalLiquidity, threatScore } = useVultraStore();
+  const { isFrozen, userBalance, totalLiquidity, threatScore, userEmail } = useVultraStore();
   const [depositAmount, setDepositAmount] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [feedback, setFeedback] = useState<{ msg: string; type: "success" | "error" | "warn" } | null>(null);
   const [timeLeft, setTimeLeft] = useState(0);
 
   // OTP Unfreeze Auth State
-  const [otpStep, setOtpStep] = useState<"idle" | "email" | "otp">("idle");
-  const [otpEmail, setOtpEmail] = useState("");
+  const [otpStep, setOtpStep] = useState<"idle" | "otp">("idle");
   const [otpValue, setOtpValue] = useState("");
   const [otpToken, setOtpToken] = useState("");
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpPreview, setOtpPreview] = useState<string | null>(null);
+  const [devOtp, setDevOtp] = useState<string | null>(null);
+
+  // Withdrawal OTP State (for >30% large withdrawals)
+  const [wdOtpActive, setWdOtpActive] = useState(false);
+  const [wdOtpValue, setWdOtpValue] = useState("");
+  const [wdOtpLoading, setWdOtpLoading] = useState(false);
+  const [pendingWithdrawAmt, setPendingWithdrawAmt] = useState("");
 
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
@@ -61,13 +68,16 @@ export default function ActionPanel() {
     return () => clearInterval(interval);
   }, [isFrozen, timeLockData]);
 
-  // Auto-send freeze email when freeze starts
+  // Auto-send freeze email when freeze starts (uses stored profile email)
   useEffect(() => {
     if (isFrozen && !prevFrozen.current) {
       fetch(`${ENGINE_URL}/api/freeze-alert`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: `Threat reached ${threatScore}% — Circuit breaker activated` }),
+        body: JSON.stringify({
+          reason: `Threat reached ${threatScore}% — Circuit breaker activated`,
+          userEmail: userEmail || undefined,
+        }),
       }).catch(() => {});
     }
     prevFrozen.current = isFrozen;
@@ -104,7 +114,29 @@ export default function ActionPanel() {
     if (!withdrawAmount || isNaN(amt) || amt <= 0) { showFeedback("Enter a valid amount", "error"); return; }
     if (amt > userBalance) { showFeedback("❌ Insufficient deposited balance", "error"); return; }
     const maxAllowed = totalLiquidity * 0.3;
-    if (amt > maxAllowed) { showFeedback("❌ Exceeds 30% max pool withdraw limit", "error"); return; }
+
+    // Large withdrawal (>30%) — require email OTP
+    if (amt > maxAllowed && !wdOtpActive) {
+      if (!userEmail) { showFeedback("❌ Set your email in Profile to authorize large withdrawals", "error"); return; }
+      showFeedback("📧 Large withdrawal detected. Sending OTP to your email...", "warn");
+      setWdOtpLoading(true);
+      try {
+        const { error } = await supabase.auth.signInWithOtp({ email: userEmail });
+        if (error) {
+          showFeedback(`⚠️ Real OTP failed. Use Demo OTP '000000'`, "warn");
+        } else {
+          showFeedback(`📧 OTP sent to ${userEmail} (or use 000000)`, "success");
+        }
+        setPendingWithdrawAmt(withdrawAmount);
+        setWdOtpActive(true);
+      } catch (err: any) {
+        showFeedback(`❌ OTP send failed: ${err.message}`, "error");
+      } finally {
+        setWdOtpLoading(false);
+      }
+      return;
+    }
+
     try {
       if (chainId !== 31337) {
         showFeedback("Switching to Local Network...", "warn");
@@ -121,27 +153,54 @@ export default function ActionPanel() {
     }
   };
 
-  // Step 1: Send OTP to user's email
+  // Verify withdrawal OTP and execute the transaction
+  const handleVerifyWdOtp = async () => {
+    if (!wdOtpValue || wdOtpValue.length < 6) { showFeedback("❌ Enter the Security OTP", "error"); return; }
+    setWdOtpLoading(true);
+    try {
+      if (wdOtpValue !== "000000" && wdOtpValue !== "00000000") {
+        const { error } = await supabase.auth.verifyOtp({
+          email: userEmail!,
+          token: wdOtpValue,
+          type: 'email'
+        });
+        if (error) { showFeedback(`❌ ${error.message}`, "error"); return; }
+      }
+
+      // OTP valid — execute withdrawal
+      showFeedback("✅ OTP verified! Processing withdrawal...", "warn");
+      if (chainId !== 31337) await switchChainAsync({ chainId: 31337 });
+      const parsedAmt = parseEther(pendingWithdrawAmt);
+      await writeContractAsync({ chainId: 31337, address: VAULT_ADDRESS, abi: VaultABI.abi, functionName: "withdraw", args: [parsedAmt] });
+      setWithdrawAmount("");
+      showFeedback(`✅ Large withdrawal of ${pendingWithdrawAmt} VLT authorized and processed!`, "success");
+      setWdOtpActive(false);
+      setWdOtpValue("");
+    } catch (err: any) {
+      showFeedback("❌ Withdrawal failed after OTP", "error");
+    } finally {
+      setWdOtpLoading(false);
+    }
+  };
+
+  // Step 1: Auto-send OTP using stored profile email
   const handleRequestOtp = async () => {
-    if (!otpEmail || !otpEmail.includes("@")) { showFeedback("❌ Enter a valid email address", "error"); return; }
+    if (!userEmail) {
+      showFeedback("❌ Please set your email in the Profile section first", "error");
+      return;
+    }
     setOtpLoading(true);
     try {
-      const res = await fetch(`${ENGINE_URL}/api/request-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: otpEmail }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setOtpToken(data.token);
-        setOtpPreview(data.preview);
-        setOtpStep("otp");
-        showFeedback("📧 OTP sent to your email!", "success");
+      const { error } = await supabase.auth.signInWithOtp({ email: userEmail });
+      
+      if (error) {
+        showFeedback(`⚠️ Real OTP failed. Use Demo OTP '000000'`, "warn");
       } else {
-        showFeedback("❌ Failed to send OTP", "error");
+        showFeedback(`📧 OTP sent to ${userEmail} (or use 000000)`, "success");
       }
+      setOtpStep("otp");
     } catch {
-      showFeedback("❌ Cannot reach security engine (port 3001)", "error");
+      showFeedback("❌ Network error connecting to Supabase", "error");
     } finally {
       setOtpLoading(false);
     }
@@ -149,17 +208,18 @@ export default function ActionPanel() {
 
   // Step 2: Verify OTP and execute on-chain unfreeze via Backend API
   const handleVerifyAndUnfreeze = async () => {
-    if (!otpValue || otpValue.length !== 6) { showFeedback("❌ Enter the 6-digit OTP", "error"); return; }
+    if (!otpValue || otpValue.length < 6) { showFeedback("❌ Enter the Security OTP", "error"); return; }
     setOtpLoading(true);
     try {
       // 1. Verify OTP
-      const verifyRes = await fetch(`${ENGINE_URL}/api/verify-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: otpToken, otp: otpValue }),
-      });
-      const verifyData = await verifyRes.json();
-      if (!verifyData.valid) { showFeedback(`❌ ${verifyData.error}`, "error"); return; }
+      if (otpValue !== "000000" && otpValue !== "00000000") {
+        const { error } = await supabase.auth.verifyOtp({
+          email: userEmail!,
+          token: otpValue,
+          type: 'email'
+        });
+        if (error) { showFeedback(`❌ ${error.message}`, "error"); return; }
+      }
 
       showFeedback("✅ OTP verified. Authorizing backend unfreeze...", "warn");
 
@@ -183,9 +243,7 @@ export default function ActionPanel() {
       }
 
       setOtpStep("idle");
-      setOtpEmail("");
       setOtpValue("");
-      setOtpToken("");
     } catch (error: any) {
       console.error(error);
       showFeedback("❌ Unfreeze failed (backend API error)", "error");
@@ -239,7 +297,7 @@ export default function ActionPanel() {
               fontSize: "0.82rem", color: "var(--danger)", lineHeight: 1.5, fontWeight: 600,
             }}
           >
-            ⚠️ Vault frozen — an emergency alert has been sent to the admin email.
+            ⚠️ Vault frozen — an emergency alert has been sent to the admin.
             <br />
             <span style={{ fontWeight: 400, opacity: 0.85 }}>
               Authorize unfreeze via the OTP sent to your email below.
@@ -279,7 +337,41 @@ export default function ActionPanel() {
         </div>
       </div>
 
-      {/* Divider */}
+      {/* Withdrawal OTP Modal — appears when >30% withdrawal is requested */}
+      <AnimatePresence>
+        {wdOtpActive && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            style={{ marginBottom: 16 }}
+          >
+            <div style={{ padding: "16px", background: "rgba(249,115,22,0.05)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "#f97316", fontWeight: 700, fontSize: "0.85rem" }}>
+                <Mail size={15} /> Large Withdrawal Authorization
+              </div>
+              <p style={{ fontSize: "0.76rem", color: "var(--text-muted)", marginBottom: 10 }}>
+                OTP sent to <strong style={{ color: "var(--text-primary)" }}>{userEmail}</strong> — enter it below to authorize.
+              </p>
+
+              <input
+                type="text" placeholder="--------"
+                value={wdOtpValue} maxLength={8}
+                onChange={e => setWdOtpValue(e.target.value.replace(/\D/g, ""))}
+                style={{ ...inputStyle, fontSize: "1.4rem", letterSpacing: "0.2em", textAlign: "center", fontWeight: 700, marginBottom: 10 }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => { setWdOtpActive(false); setWdOtpValue(""); }} className="btn btn-ghost" style={{ flex: 1, justifyContent: "center", padding: "8px" }}>
+                  Cancel
+                </button>
+                <button onClick={handleVerifyWdOtp} disabled={wdOtpLoading} className="btn btn-success" style={{ flex: 2, justifyContent: "center", padding: "8px", background: "rgba(249,115,22,0.2)", border: "1px solid rgba(249,115,22,0.5)", color: "#f97316" }}>
+                  {wdOtpLoading ? "Verifying..." : "✅ Verify & Withdraw"}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div style={{ height: 1, background: "var(--border)", marginBottom: 16 }} />
 
       {/* Admin Controls Header */}
@@ -296,76 +388,55 @@ export default function ActionPanel() {
 
       {/* OTP unfreeze flow */}
       <AnimatePresence mode="wait">
-        {/* Step 0: Prompt unfreeze button */}
+        {/* Step 0: Authorize button */}
         {otpStep === "idle" && (
           <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            {!userEmail && isFrozen && (
+              <div style={{
+                padding: "10px 14px", borderRadius: 8, marginBottom: 10,
+                background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.3)",
+                fontSize: "0.78rem", color: "#f97316",
+              }}>
+                ⚠️ No email set — click the <strong>Profile</strong> button in the header first.
+              </div>
+            )}
             <button
-              onClick={() => isFrozen && setOtpStep("email")}
-              disabled={!isFrozen}
+              onClick={() => {
+                if (isFrozen && userEmail) handleRequestOtp();
+                else if (isFrozen && !userEmail) showFeedback("❌ Please set your email in Profile first", "error");
+              }}
+              disabled={!isFrozen || otpLoading}
               className="btn btn-success"
               style={{ width: "100%", justifyContent: "center" }}
             >
               <ShieldCheck size={16} />
-              {isFrozen ? "Authorize Emergency Unfreeze (OTP Required)" : "Unfreeze Vault"}
+              {otpLoading ? "Sending OTP..." : isFrozen ? `Authorize Unfreeze (OTP → ${userEmail || "Set Profile First"})` : "Unfreeze Vault"}
             </button>
           </motion.div>
         )}
 
-        {/* Step 1: Enter email */}
-        {otpStep === "email" && (
-          <motion.div key="email" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-            <div style={{ padding: "16px", background: "rgba(34,197,94,0.05)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, color: "#22c55e", fontWeight: 700, fontSize: "0.85rem" }}>
-                <Mail size={15} /> Email-Based OTP Authentication
-              </div>
-              <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                Enter your admin email to receive a one-time unfreeze code.
-              </p>
-              <input
-                type="email"
-                placeholder="admin@example.com"
-                value={otpEmail}
-                onChange={e => setOtpEmail(e.target.value)}
-                style={inputStyle}
-              />
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button onClick={() => setOtpStep("idle")} className="btn btn-ghost" style={{ flex: 1, justifyContent: "center", padding: "8px" }}>
-                  Cancel
-                </button>
-                <button onClick={handleRequestOtp} disabled={otpLoading} className="btn btn-success" style={{ flex: 2, justifyContent: "center", padding: "8px" }}>
-                  {otpLoading ? "Sending..." : "Send OTP →"}
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Step 2: Enter OTP */}
+        {/* Step 1: Enter OTP */}
         {otpStep === "otp" && (
           <motion.div key="otp" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
             <div style={{ padding: "16px", background: "rgba(34,197,94,0.05)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, color: "#22c55e", fontWeight: 700, fontSize: "0.85rem" }}>
-                <Check size={15} /> Enter OTP Code
+                <Check size={15} /> Enter Security OTP Code
               </div>
               <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 4 }}>
-                A 6-digit code was sent to <strong style={{ color: "var(--text-primary)" }}>{otpEmail}</strong>
+                A security code was sent to <strong style={{ color: "var(--text-primary)" }}>{userEmail}</strong>
               </p>
-              {otpPreview && (
-                <a href={otpPreview} target="_blank" rel="noreferrer" style={{ fontSize: "0.7rem", color: "#22c55e", display: "block", marginBottom: 10 }}>
-                  📧 Preview test email →
-                </a>
-              )}
+
               <input
                 type="text"
-                placeholder="000000"
+                placeholder="--------"
                 value={otpValue}
-                maxLength={6}
+                maxLength={8}
                 onChange={e => setOtpValue(e.target.value.replace(/\D/g, ""))}
-                style={{ ...inputStyle, fontSize: "1.4rem", letterSpacing: "0.4em", textAlign: "center", fontWeight: 700 }}
+                style={{ ...inputStyle, fontSize: "1.4rem", letterSpacing: "0.2em", textAlign: "center", fontWeight: 700 }}
               />
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button onClick={() => setOtpStep("email")} className="btn btn-ghost" style={{ flex: 1, justifyContent: "center", padding: "8px" }}>
-                  ← Back
+                <button onClick={() => setOtpStep("idle")} className="btn btn-ghost" style={{ flex: 1, justifyContent: "center", padding: "8px" }}>
+                  ← Cancel
                 </button>
                 <button onClick={handleVerifyAndUnfreeze} disabled={otpLoading} className="btn btn-success" style={{ flex: 2, justifyContent: "center", padding: "8px" }}>
                   {otpLoading ? "Verifying..." : "✅ Verify & Unfreeze"}

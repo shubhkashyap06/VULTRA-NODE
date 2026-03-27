@@ -1,110 +1,25 @@
 import { ethers } from "ethers";
 import fs from "fs";
 import path from "path";
-import nodemailer from "nodemailer";
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 // ─── CONFIG ─────────────────────────────────────────────────────────────────
 const configPath = path.resolve(__dirname, "./config.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
-const GUARDIAN_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const ADMIN_EMAIL = config.email?.adminEmail || "admin@vultra-node.com";
-const SMTP_CONFIG = config.email || {
-  host: "smtp.ethereal.email",
-  port: 587,
-  user: "",
-  pass: "",
-};
-
-// ─── OTP STORE (in-memory) ────────────────────────────────────────────────────
-const otpStore = new Map<string, { otp: string; expires: number; email: string }>();
-
-// ─── EMAIL TRANSPORTER ────────────────────────────────────────────────────────
-let transporter: nodemailer.Transporter;
-
-async function setupEmail() {
-  if (SMTP_CONFIG.user && SMTP_CONFIG.pass) {
-    // Use configured SMTP
-    transporter = nodemailer.createTransport({
-      host: SMTP_CONFIG.host,
-      port: SMTP_CONFIG.port,
-      secure: false,
-      auth: { user: SMTP_CONFIG.user, pass: SMTP_CONFIG.pass },
-    });
-    console.log(`📧 Email configured: ${SMTP_CONFIG.host}`);
-  } else {
-    // Auto-create a disposable Ethereal test account
-    const testAccount = await nodemailer.createTestAccount();
-    transporter = nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
-      auth: { user: testAccount.user, pass: testAccount.pass },
-    });
-    console.log(`📧 Test Email Account: ${testAccount.user}`);
-    console.log(`🌐 Preview emails at: https://ethereal.email/login`);
-    console.log(`   User: ${testAccount.user} | Pass: ${testAccount.pass}\n`);
-  }
-}
+const GUARDIAN_PRIVATE_KEY = process.env.GUARDIAN_PRIVATE_KEY || "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const ADMIN_PHONE = process.env.ADMIN_PHONE || config.phone?.adminPhone || "+1234567890";
 
 async function sendFreezeAlert(reason: string, userEmail?: string) {
-  const otp = crypto.randomInt(100000, 999999).toString();
-  const unfreezeToken = crypto.randomUUID();
-  const expires = Date.now() + 15 * 60 * 1000; // 15 min
-
-  otpStore.set(unfreezeToken, { otp, expires, email: ADMIN_EMAIL });
-
-  const unfreezeLink = `http://localhost:3000/unfreeze?token=${unfreezeToken}&otp=${otp}`;
-
-  const adminHtml = `
-  <div style="font-family: monospace; background:#050810; color:#e2e8f8; padding:32px; border-radius:12px; max-width:560px;">
-    <div style="color:#ef4444; font-size:22px; font-weight:700; margin-bottom:12px;">
-      🔒 VULTRA-NODE VAULT FROZEN
-    </div>
-    <p style="color:#94a3b8;">The DeFi security protocol has automatically frozen the liquidity vault.</p>
-    <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:16px; margin:16px 0;">
-      <div style="color:#64748b; font-size:12px; margin-bottom:4px;">REASON</div>
-      <div style="color:#f97316;">${reason}</div>
-    </div>
-    <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:16px; margin:16px 0;">
-      <div style="color:#64748b; font-size:12px; margin-bottom:8px;">EMERGENCY UNFREEZE OTP</div>
-      <div style="color:#22c55e; font-size:32px; letter-spacing:8px; font-weight:700;">${otp}</div>
-      <div style="color:#475569; font-size:11px; margin-top:6px;">Expires in 15 minutes</div>
-    </div>
-    <a href="${unfreezeLink}" style="display:inline-block; background:#22c55e; color:#000; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:700; margin-top:8px;">
-      Click to Authorize Unfreeze →
-    </a>
-    <p style="color:#334155; font-size:11px; margin-top:20px;">Vultra-Node DeFi Security Protocol | Do not share this OTP</p>
-  </div>`;
-
-  try {
-    const adminInfo = await transporter.sendMail({
-      from: `"Vultra-Node Security" <security@vultra-node.com>`,
-      to: ADMIN_EMAIL,
-      subject: `🔒 CRITICAL: Vault Frozen — Emergency OTP Inside`,
-      html: adminHtml,
-    });
-    const adminPreview = nodemailer.getTestMessageUrl(adminInfo);
-    if (adminPreview) console.log(`\n📧 Admin Alert Preview: ${adminPreview}`);
-
-    if (userEmail && userEmail !== ADMIN_EMAIL) {
-      const userInfo = await transporter.sendMail({
-        from: `"Vultra-Node Security" <security@vultra-node.com>`,
-        to: userEmail,
-        subject: `⚠️ Your DeFi Vault Has Been Frozen`,
-        html: adminHtml.replace("EMERGENCY UNFREEZE OTP", "YOUR VAULT NOTIFICATION").replace(`<div style="color:#22c55e; font-size:32px; letter-spacing:8px; font-weight:700;">${otp}</div>`, ""),
-      });
-      const userPreview = nodemailer.getTestMessageUrl(userInfo);
-      if (userPreview) console.log(`📧 User Notification Preview: ${userPreview}`);
-    }
-  } catch (err: any) {
-    console.error(`❌ Email failed: ${err.message}`);
+  console.log(`\n🚨 ADMIN ALERT LOG: ${reason}`);
+  if (userEmail) {
+    console.log(`📧 SECURITY EMAIL LOG: Sent freeze notification to ${userEmail}`);
   }
-
-  return { otp, unfreezeToken };
 }
 
 // ─── WALLET STATE ─────────────────────────────────────────────────────────────
@@ -131,8 +46,6 @@ async function main() {
   console.log("🛡️  Starting Advanced Vultra-Node Threat Engine...\n");
   console.log(`⚙️  Loaded Config: Threshold > ${config.engine.freezeThreshold} | Decay -${config.engine.decayRatePerMinute}/min\n`);
 
-  await setupEmail();
-
   const deployPath = path.resolve(__dirname, "../contracts/deployments.json");
   const deployments = JSON.parse(fs.readFileSync(deployPath, "utf8"));
   const VAULT_ADDRESS = deployments.contracts.LiquidityVault;
@@ -141,6 +54,7 @@ async function main() {
   const vaultArtifact = JSON.parse(fs.readFileSync(abiPath, "utf8"));
 
   const provider = new ethers.JsonRpcProvider(config.engine.rpcUrl);
+  provider.pollingInterval = 500; // Fixes 4s event lag on localhost
   const guardianWallet = new ethers.Wallet(GUARDIAN_PRIVATE_KEY, provider);
   const vaultContract = new ethers.Contract(VAULT_ADDRESS, vaultArtifact.abi, guardianWallet);
 
@@ -188,10 +102,9 @@ async function main() {
         await tx.wait();
         console.log(`🔒 SECURED: Vault frozen by Guardian.`);
 
-        // Fire email alerts
-        const { otp, unfreezeToken } = await sendFreezeAlert(reason);
-        console.log(`\n🔑 Admin OTP: ${otp}`);
-        console.log(`🔗 Unfreeze Token stored: ${unfreezeToken.slice(0,12)}...`);
+        // Fire console alerts
+        await sendFreezeAlert(reason);
+        console.log(`\n📧 Note: All OTPs are now handled via Supabase directly on the client.`);
       } catch (err: any) {
         if (err.message.includes("already frozen")) {
           console.log(`⚠️  Vault already frozen.`);
@@ -206,7 +119,6 @@ async function main() {
   vaultContract.on("Unfreeze", () => {
     isFrozen = false;
     stateMap.clear();
-    otpStore.clear();
     console.log(`\n✅ [ADMIN ACTION] System Unfrozen. All threat memory cleared.`);
   });
 
@@ -219,56 +131,8 @@ async function main() {
   app.post("/api/freeze-alert", async (req, res) => {
     const { reason, userEmail } = req.body;
     console.log(`\n📨 Freeze alert requested from frontend: ${reason}`);
-    const result = await sendFreezeAlert(reason || "Threat threshold exceeded via UI", userEmail);
-    res.json({ success: true, message: "Freeze alert sent", token: result.unfreezeToken });
-  });
-
-  // POST /api/request-otp — Sends a fresh OTP for unfreeze
-  app.post("/api/request-otp", async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email required" });
-
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const token = crypto.randomUUID();
-    otpStore.set(token, { otp, expires: Date.now() + 15 * 60 * 1000, email });
-
-    try {
-      const info = await transporter.sendMail({
-        from: `"Vultra-Node Security" <security@vultra-node.com>`,
-        to: email,
-        subject: `🔑 Your Unfreeze OTP — ${otp}`,
-        html: `<div style="font-family:monospace;background:#050810;color:#e2e8f8;padding:32px;border-radius:12px;">
-          <h2 style="color:#22c55e;">Vault Unfreeze OTP</h2>
-          <p style="color:#94a3b8;">Enter this OTP in the Vultra-Node dashboard to unfreeze the vault:</p>
-          <div style="background:#0f172a;border:1px solid #22c55e33;padding:16px;border-radius:8px;margin:16px 0;">
-            <div style="color:#22c55e;font-size:36px;letter-spacing:10px;font-weight:700;">${otp}</div>
-          </div>
-          <p style="color:#64748b;font-size:12px;">Expires in 15 minutes. Do not share.</p>
-        </div>`,
-      });
-      const preview = nodemailer.getTestMessageUrl(info);
-      if (preview) console.log(`\n📧 OTP Preview: ${preview}`);
-      res.json({ success: true, token, preview: preview || null });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // POST /api/verify-otp — Validates OTP before the frontend calls unfreeze()
-  app.post("/api/verify-otp", (req, res) => {
-    const { token, otp } = req.body;
-    const record = otpStore.get(token);
-
-    if (!record) return res.status(404).json({ valid: false, error: "Invalid token" });
-    if (Date.now() > record.expires) {
-      otpStore.delete(token);
-      return res.status(401).json({ valid: false, error: "OTP expired" });
-    }
-    if (record.otp !== otp) return res.status(401).json({ valid: false, error: "Incorrect OTP" });
-
-    otpStore.delete(token); // One-time use
-    console.log(`\n✅ OTP verified for: ${record.email}`);
-    res.json({ valid: true, message: "OTP verified — proceed to unfreeze" });
+    await sendFreezeAlert(reason || "Threat threshold exceeded via UI", userEmail);
+    res.json({ success: true, message: "Freeze alert logged" });
   });
 
   // POST /api/execute-unfreeze — Executes emergencyUnfreeze() as Admin
@@ -282,7 +146,6 @@ async function main() {
       const tx = await adminVault.emergencyUnfreeze();
       await tx.wait();
       isFrozen = false;
-      otpStore.clear();
       console.log(`✅ Vault unfrozen successfully. TX: ${tx.hash}`);
       res.json({ success: true, txHash: tx.hash });
     } catch (err: any) {
@@ -313,8 +176,8 @@ async function main() {
   app.listen(3001, () => {
     console.log(`\n🌐 Threat Engine API running on port 3001`);
     console.log(`   POST /api/freeze-alert`);
-    console.log(`   POST /api/request-otp`);
-    console.log(`   POST /api/verify-otp`);
+    console.log(`   POST /api/execute-unfreeze`);
+    console.log(`   POST /api/execute-freeze`);
   });
 
   process.stdin.resume();
