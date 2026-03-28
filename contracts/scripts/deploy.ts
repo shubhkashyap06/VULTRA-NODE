@@ -64,17 +64,34 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(deployment, null, 2));
   console.log(`\n📄 Deployment saved to: ${outPath}`);
 
-  // Also write to frontend env file so wagmi picks up addresses
+  // ── 4. Update Frontend .env.local ──────────────────────────────────────
   const frontendEnvPath = path.join(
     __dirname,
     "../../vultra-node/.env.local"
   );
-  const envContent = [
-    `NEXT_PUBLIC_VLT_TOKEN_ADDRESS=${tokenAddress}`,
-    `NEXT_PUBLIC_VAULT_ADDRESS=${vaultAddress}`,
-    `NEXT_PUBLIC_CHAIN_ID=${deployment.chainId}`,
-  ].join("\n") + "\n";
-  fs.writeFileSync(frontendEnvPath, envContent, { flag: "w" });
+  
+  let currentEnv = "";
+  if (fs.existsSync(frontendEnvPath)) {
+    currentEnv = fs.readFileSync(frontendEnvPath, "utf8");
+  }
+
+  const newVars: Record<string, string> = {
+    NEXT_PUBLIC_VLT_TOKEN_ADDRESS: tokenAddress,
+    NEXT_PUBLIC_VAULT_ADDRESS: vaultAddress,
+    NEXT_PUBLIC_CHAIN_ID: deployment.chainId.toString(),
+  };
+
+  let updatedEnv = currentEnv;
+  for (const [key, value] of Object.entries(newVars)) {
+    const regex = new RegExp(`^${key}=.*`, "m");
+    if (regex.test(updatedEnv)) {
+      updatedEnv = updatedEnv.replace(regex, `${key}=${value}`);
+    } else {
+      updatedEnv += `\n${key}=${value}`;
+    }
+  }
+
+  fs.writeFileSync(frontendEnvPath, updatedEnv.trim() + "\n");
   console.log(`   ✅ Frontend .env.local updated: ${frontendEnvPath}`);
 
   console.log("\n🎉 All contracts deployed successfully!\n");

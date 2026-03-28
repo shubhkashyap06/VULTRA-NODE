@@ -59,6 +59,10 @@ export interface VultraStore {
   connectWallet: () => void;
   disconnectWallet: () => void;
 
+  /* Profile */
+  userEmail: string | null;
+  setUserEmail: (email: string) => void;
+
   /* System */
   systemStatus: SystemStatus;
   isFrozen: boolean; // convenience alias always in sync with systemStatus
@@ -191,6 +195,13 @@ export const useVultraStore = create<VultraStore>((set, get) => ({
   isConnected: false,
   connectWallet: () => set({ walletAddress: MOCK_WALLET, isConnected: true }),
   disconnectWallet: () => set({ walletAddress: null, isConnected: false }),
+
+  /* ── Profile ── */
+  userEmail: typeof window !== "undefined" ? localStorage.getItem("vultra_user_email") : null,
+  setUserEmail: (email: string) => {
+    if (typeof window !== "undefined") localStorage.setItem("vultra_user_email", email);
+    set({ userEmail: email });
+  },
 
   /* ── System ── */
   systemStatus: "NORMAL",
@@ -629,6 +640,7 @@ if (typeof window !== "undefined") {
       useVultraStore.setState({ 
         isFrozen: false, 
         systemStatus: "NORMAL",
+        threatScore: 0,
         alertMessage: "No suspicious activity detected."
       });
     }
