@@ -103,7 +103,7 @@ export default function AttackerPage() {
           {[
             { label: "Attacks Launched", value: attackCount, color: "#ef4444" },
             { label: "Freeze Events", value: frozenCount, color: "#f97316" },
-            { label: "Threat Score", value: `${threatScore}%`, color: threatScore >= 70 ? "#ef4444" : threatScore >= 40 ? "#f97316" : "#22c55e" },
+            { label: "Threat Score", value: `${threatScore}%`, color: threatScore >= 20 ? "#ef4444" : threatScore > 0 ? "#f97316" : "#22c55e" },
             { label: "Target Status", value: isFrozen ? "FROZEN" : "ACTIVE", color: isFrozen ? "#ef4444" : "#22c55e" },
           ].map((stat) => (
             <motion.div
@@ -166,7 +166,7 @@ export default function AttackerPage() {
               </div>
               <ThreatMeter />
               <div style={{ marginTop: 12, fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                Threshold: auto-freeze at 70 · Current target: Vultra-Node Pool
+                Threshold: auto-freeze at 20 · Current target: Vultra-Node Pool
               </div>
             </div>
 

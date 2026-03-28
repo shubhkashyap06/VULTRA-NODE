@@ -1,7 +1,7 @@
 {
   "engine": {
     "rpcUrl": "http://127.0.0.1:8545",
-    "freezeThreshold": 70,
+    "freezeThreshold": 20,
     "decayRatePerMinute": 5,
     "evaluationIntervalMs": 10000
   },
@@ -15,11 +15,11 @@
       ]
     },
     "largeVolume": {
-      "name": "Large Volume Drain",
+      "name": "Cumulative Percentage Drain",
       "timeWindowMs": 60000,
       "thresholds": [
-        { "volume": 1000, "score": 40, "level": "WARNING" },
-        { "volume": 5000, "score": 80, "level": "CRITICAL" }
+        { "percentage": 10, "score": 50, "level": "WARNING" },
+        { "percentage": 20, "score": 100, "level": "CRITICAL" }
       ]
     }
   }

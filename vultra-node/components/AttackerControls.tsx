@@ -16,7 +16,7 @@ const RPC_URL = "http://127.0.0.1:8545";
 const ATTACKER_PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 // Hardhat Account #0 (Guardian — holds GUARDIAN_ROLE on the vault)
 const GUARDIAN_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const FREEZE_THRESHOLD = 70;
+const FREEZE_THRESHOLD = 20;
 
 interface AttackDef {
   type: AttackType;
@@ -51,6 +51,14 @@ const ATTACKS: AttackDef[] = [
     desc: "Triggers immediate CRITICAL freeze. Guardian wallet calls vault.freeze() directly.",
     threat: 100,
     impact: "CRITICAL",
+  },
+  {
+    type: "DRIP",
+    label: "Cumulative Drip (10%, 10%, 5%)",
+    command: "./scripts/drip.sh --target vault --pattern 10,10,5",
+    desc: "Executes a pattern of percentage drains bleeding 25% total. Triggers new percentage-based limits.",
+    threat: 40,
+    impact: "HIGH",
   },
 ];
 
@@ -191,6 +199,43 @@ export default function AttackerControls() {
         increaseThreat(100, "Flash Exploit — Immediate Freeze");
         // Flash always triggers a direct Guardian freeze
         await executeOnChainFreeze("Flash Attack — immediate critical threat signature", pushAttackLog);
+      }
+      
+      else if (type === "DRIP") {
+        pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: "Initiating Drip Exploit — measuring vault liquidity..." });
+        try {
+          const totalLiquidityRaw = await vault.totalDeposits();
+          if (totalLiquidityRaw == BigInt(0)) {
+             pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: "Vault is empty. Exploit aborted." });
+          } else {
+             const steps = [10, 10, 5];
+             for (let i = 0; i < steps.length; i++) {
+                const pct = steps[i];
+                const amountRaw = (totalLiquidityRaw * BigInt(pct)) / BigInt(100);
+                const formatAmt = ethers.formatEther(amountRaw);
+                const addedScore = pct >= 10 ? 25 : 15;
+                
+                await triggerFreezeIfNeeded(addedScore, `Cumulative Drip Exploit Detected — ${pct}% volume`);
+                
+                try {
+                   const tx = await vault.withdraw(amountRaw);
+                   await tx.wait();
+                   pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: addedScore, result: `Drip ${i + 1}/${steps.length} (${pct}%) succeeded. Drained ${Number(formatAmt).toFixed(1)} VLT.` });
+                   increaseThreat(addedScore, `Drip Exploit Segment ${i + 1}`);
+                   await new Promise(r => setTimeout(r, 800));
+                } catch (e: any) {
+                   if (e.message?.includes("frozen")) {
+                     pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: `Drip ${i + 1}/${steps.length} BLOCKED — Circuit Breaker engaged.` });
+                     break;
+                   }
+                   pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: `Drip ${i + 1}/${steps.length} failed. (${e.message.split("(")[0]})` });
+                }
+             }
+             pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: "Drip sequence complete." });
+          }
+        } catch (err: any) {
+           pushAttackLog({ attackType: type, label: meta.label, impact: meta.impact, threatDelta: 0, result: `Initialization failed: ${err.message}` });
+        }
       }
 
     } catch (e: any) {

@@ -8,7 +8,8 @@ export type AttackType =
   | "LARGE_WITHDRAW"
   | "RAPID_TX"
   | "MULTI_WALLET"
-  | "FLASH";
+  | "FLASH"
+  | "DRIP";
 export type AlertLevel = "INFO" | "WARNING" | "CRITICAL";
 
 export interface Transaction {
@@ -177,6 +178,12 @@ const attackMeta: Record<
     impact: "CRITICAL",
     threat: 100,
     result: "Flash loan exploit — instant pool drain attempt",
+  },
+  DRIP: {
+    label: "Drip Drain (10%, 10%, 5%)",
+    impact: "HIGH",
+    threat: 40,
+    result: "Cumulative percentage drain exploit sequence",
   },
 };
 
@@ -350,7 +357,7 @@ export const useVultraStore = create<VultraStore>((set, get) => ({
     const next = Math.min(current + score, 100);
     const alerts = get().alerts;
 
-    const level: AlertLevel = next >= 70 ? "CRITICAL" : next >= 40 ? "WARNING" : "INFO";
+    const level: AlertLevel = next >= 20 ? "CRITICAL" : next > 0 ? "WARNING" : "INFO";
     const newAlert: AlertItem = {
       id: uid(),
       level,
@@ -375,7 +382,7 @@ export const useVultraStore = create<VultraStore>((set, get) => ({
     }
 
     // Auto-freeze if threshold reached
-    if (next >= 70 && !get().isFrozen) {
+    if (next >= 20 && !get().isFrozen) {
       get().freezeSystem(`Threat score ${next}% exceeded safety threshold`);
     }
   },

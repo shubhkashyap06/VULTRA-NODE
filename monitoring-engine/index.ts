@@ -64,7 +64,7 @@ async function main() {
   const stateMap = new Map<string, WalletState>();
   let isFrozen = false;
 
-  const evaluateThreats = (address: string): number => {
+  const evaluateThreats = (address: string, totalDeposits: number): number => {
     const state = stateMap.get(address)!;
     state.applyTimeDecay();
     let activeScore = state.baseScore;
@@ -72,12 +72,16 @@ async function main() {
     state.withdrawals = state.withdrawals.filter(w => now - w.timestamp < 60000);
     const count = state.withdrawals.length;
     const volume = state.withdrawals.reduce((sum, w) => sum + w.amount, 0);
+    const percentDrained = totalDeposits > 0 ? (volume / totalDeposits) * 100 : 0;
+    
     const rapidConfig = config.rules.rapidTransactions.thresholds;
     if (count >= rapidConfig[1].count) activeScore += rapidConfig[1].score;
     else if (count >= rapidConfig[0].count) activeScore += rapidConfig[0].score;
+    
     const volConfig = config.rules.largeVolume.thresholds;
-    if (volume >= volConfig[1].volume) activeScore += volConfig[1].score;
-    else if (volume >= volConfig[0].volume) activeScore += volConfig[0].score;
+    if (percentDrained >= volConfig[1].percentage) activeScore += volConfig[1].score;
+    else if (percentDrained >= volConfig[0].percentage) activeScore += volConfig[0].score;
+    
     return Math.min(activeScore, 100);
   };
 
@@ -89,8 +93,17 @@ async function main() {
     if (!stateMap.has(user)) stateMap.set(user, new WalletState());
     stateMap.get(user)!.withdrawals.push({ amount: formattedAmount, timestamp: Date.now() });
 
-    const totalScore = evaluateThreats(user);
-    console.log(`🔎 Threat Engine | User: ${user.slice(0, 6)}... | Score: [${totalScore}/100]`);
+    try {
+      const totalDepositsRaw = await vaultContract.totalDeposits();
+      const totalDeposits = Number(ethers.formatEther(totalDepositsRaw));
+
+      const totalScore = evaluateThreats(user, totalDeposits);
+      
+      const state = stateMap.get(user)!;
+      const recentVolume = state.withdrawals.filter(w => Date.now() - w.timestamp < 60000).reduce((sum, w) => sum + w.amount, 0);
+      const percentDrained = totalDeposits > 0 ? (recentVolume / totalDeposits) * 100 : 0;
+      
+      console.log(`🔎 Threat Engine | User: ${user.slice(0, 6)}... | Score: [${totalScore}/100] | Drained: ${percentDrained.toFixed(2)}% of Vault`);
 
     if (totalScore >= config.engine.freezeThreshold && !isFrozen) {
       isFrozen = true;
@@ -113,6 +126,9 @@ async function main() {
           isFrozen = false;
         }
       }
+    }
+    } catch (error) {
+      console.error("Error evaluating threats on withdraw:", error);
     }
   });
 

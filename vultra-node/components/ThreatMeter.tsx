@@ -4,15 +4,14 @@ import { useVultraStore } from "@/lib/store";
 import { motion, AnimatePresence } from "framer-motion";
 
 function getThreatColor(score: number) {
-  if (score >= 70) return { fg: "#ef4444", glow: "rgba(239,68,68,0.5)", bg: "rgba(239,68,68,0.08)" };
-  if (score >= 40) return { fg: "#f97316", glow: "rgba(249,115,22,0.4)", bg: "rgba(249,115,22,0.08)" };
+  if (score >= 20) return { fg: "#ef4444", glow: "rgba(239,68,68,0.5)", bg: "rgba(239,68,68,0.08)" };
+  if (score > 0) return { fg: "#f97316", glow: "rgba(249,115,22,0.4)", bg: "rgba(249,115,22,0.08)" };
   return { fg: "#22c55e", glow: "rgba(34,197,94,0.35)", bg: "rgba(34,197,94,0.07)" };
 }
 
 function getThreatLabel(score: number) {
-  if (score >= 70) return "CRITICAL";
-  if (score >= 40) return "ELEVATED";
-  if (score >= 15) return "MODERATE";
+  if (score >= 20) return "CRITICAL";
+  if (score > 0) return "ELEVATED";
   return "SAFE";
 }
 
@@ -20,7 +19,7 @@ export default function ThreatMeter({ compact = false }: { compact?: boolean }) 
   const { threatScore } = useVultraStore();
   const c = getThreatColor(threatScore);
   const label = getThreatLabel(threatScore);
-  const isPulsing = threatScore >= 70;
+  const isPulsing = threatScore >= 20;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: compact ? 8 : 12 }}>
@@ -101,7 +100,7 @@ export default function ThreatMeter({ compact = false }: { compact?: boolean }) 
         {/* Threshold markers */}
         {!compact && (
           <>
-            {[40, 70].map((mark) => (
+            {[10, 20].map((mark) => (
               <div
                 key={mark}
                 style={{
@@ -109,7 +108,7 @@ export default function ThreatMeter({ compact = false }: { compact?: boolean }) 
                   top: 0, bottom: 0,
                   left: `${mark}%`,
                   width: 1,
-                  background: mark === 70 ? "rgba(239,68,68,0.5)" : "rgba(249,115,22,0.4)",
+                  background: mark === 20 ? "rgba(239,68,68,0.5)" : "rgba(249,115,22,0.4)",
                 }}
               />
             ))}
